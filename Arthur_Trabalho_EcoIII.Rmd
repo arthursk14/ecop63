@@ -1,0 +1,468 @@
+---
+title: Implementação do filtro de Kalman para modelos lineares com nível e tendência
+  estocástica
+output:
+  html_document:
+    theme: paper
+    df_print: paged
+  word_document: default
+  pdf_document: default
+---
+
+# Resumo
+O objetivo do presente trabalho é apresentar uma implementação própria do filtro de Kalman em R. Na primeira seção serão demonstrados tanto a representação geral para modelos lineares de estado e espaço, quanto o caso específico do modelo com nível estocástico e tendência estocástica. Na segunda seção serão apresentados os algoritmos de filtragem e suavização, conforme propostos em [Durbin e Koopman (2001)](http://www.ssfpack.com/DKbook.html). Ao longo do texto serão revelados os códigos que replicam a implementação própria dos algoritmos. O código desenvolvido será utilizado para a estimação de um modelo para a série dos preços de fechamento dos últimos 100 dias das ações da [Alphabet](https://abc.xyz/), negociadas na [Nasdaq Stock Market](https://www.nasdaq.com/).
+
+# Introdução
+
+Conforme revisão apresentada por [Tussel (2011)](https://www.jstatsoft.org/article/view/v039i02), existem muitos pacotes registrados na [Comprehensive R Archive Network (CRAN)](https://cran.r-project.org/) que tratam especificamente das funcionalidades derivadas da aplicação do filtro de Kalman, além de inúmeros outros pacotes que possuem funções específicas para tratar necessidades especiais na manipulação dos modelos relacionados ao arcabouço teórico aqui explorado. O objetivo do presente trabalho, entretanto, é utilizar minimamente estes pacotes existentes, implementando um algoritmo completo para estimar modelos lineares com nível e tendência estocástica apenas utilizando o pacote básico do R.
+
+Com o objetivo de facilitar o entendimento da utilização prática do filtro de Kalman, ao longo do texto serão apresentados os códigos que replicam a teoria exposta. Este trabalho, portanto, pode ser interpretado como uma maneira de transportar os conceitos expostos nos principais livros-texto que tratam do assunto para o ambiente do R, de maneira a auxiliar o leitor já acostumado com a linguagem no entendimento do passo-a-passo dos algoritmos de filtragem e suavização para estimação de modelos lineares com nível e tendência estocástica.
+
+A referência teórica utilizada ao longo de todo texto é dada pelo livro [Time Series Analysis by State Space Methods](http://www.ssfpack.com/DKbook.html) de J. Durbin e [S.J. Koopman](https://scholar.google.com/citations?user=UDdjcsYAAAAJ&hl=pt-BR&oi=sra). Demais referências também estão destacadas ao longo do documento.
+
+# Apresentação do modelo
+
+## O modelo geral
+
+O modelo geral de estado e espaço, em sua forma linear pode ser escrito da seguinte forma:
+
+\begin{equation}
+\tag{1}
+y_t = Z_t\alpha_t + \epsilon_t, \qquad \epsilon_t \sim N(0,H_t)
+\end{equation}
+
+\begin{equation}
+\tag{2}
+\alpha_{t+1} = T_t\alpha_t + R_t\eta_t, \qquad \eta_t \sim N(0,Q_t) \qquad t = 1, ..., T
+\end{equation}
+
+Uma apresentação detalhada está disposta no Capítulo 3 de [Durbin e Koopman (2001)](http://www.ssfpack.com/DKbook.html), entretanto, algumas considerações são pertinentes para o presente trabalho: **(i)** Apesar de a representação dada pelas equações $(2)$ e $(3)$ ser válida para o caso multivariado, serão tratados apenas os casos em que as observações $y_t$ são escalares. **(ii)** O vetor $\alpha_t$ não é diretamente observado, e é geralmente chamado de vetor de estados. **(iii)** A ideia principal por trás destes modelos é a de que o desenvolvimento do sistema ao longo do tempo depende da equação $(3)$. Entretanto, como $\alpha_t$ não é observado, as análises são baseadas nas realizações de $y_t$. **(iv)** As matrizes $Z_t$ e $T_t$ definem as dimensões do modelo. Para o caso dos modelos com nível e tendência, são matrizes $2 \times 2$, como será demonstrado a seguir. As matrizes $H_t$ e $Q_t$ são as matrizes de covariância das inovações $\epsilon_t$ e $\eta_t$. Os elementos das matrizes $H_t$ e $Q_t$ são chamados de hiperparâmetros do modelo, e precisam ser estimados via máxima verossimilhança para a correta aplicação do filtro de Kalman e do algoritmo de suavização. Por fim, a matriz $R_t$ é também chamada de matriz de seleção, pois seleciona quais variáveis do vetor de estado possuem erros estocásticos.
+
+## O modelo de nível com tendência linear
+
+O caso particular mais básico derivado do modelo geral é aquele em que $Z_t$, $T_t$ e $R_t$ são todos escalares, iguais à unidade. Neste caso, chamado de modelo de nível local, $H_t$ e $Q_t$ também são escalares, iguais à ${\sigma_\epsilon}^2$ e ${\sigma_\eta}^2$.
+
+Para adicionar um componente de tendência, de modo a obter o modelo de nível com tendência linear, basta descrever uma equação extra, que explica o comportamento do coeficiente de inclinação, geralmente denominado por $\nu_t$. O modelo fica representado da seguinte forma:
+
+\begin{equation}
+\tag{3}
+y_t = \mu_t + \epsilon_t, \qquad \epsilon_t \sim N(0,{\sigma_\epsilon}^2)
+\end{equation}
+
+\begin{equation}
+\tag{4}
+\mu_{t+1} = \mu_t + \nu_t + \xi_t, \qquad \xi_t \sim N(0,{\sigma_\xi}^2)
+\end{equation}
+
+\begin{equation}
+\tag{5} 
+\nu_{t+1} = \nu_t + \zeta_t, \qquad \zeta_t \sim N(0,{\sigma_\zeta}^2)
+\end{equation}
+
+Utilizando a notação matricial, é fácil ver que o modelo é apenas um caso particular da representação dada pelas equações $(2)$ e $(3)$:
+
+\begin{equation}
+\tag{6}
+
+y_t = \begin{pmatrix}
+1 & 0 
+\end{pmatrix} 
+
+\begin{pmatrix}
+\mu_t \\
+\nu_t
+\end{pmatrix} + \epsilon_t
+
+\end{equation}
+
+\begin{equation}
+\tag{7}
+
+\begin{pmatrix}
+\mu_{t+1} \\
+\nu_{t+1}
+\end{pmatrix} = 
+
+\begin{bmatrix}
+1 & 1 \\
+0 & 1
+\end{bmatrix} 
+
+\begin{pmatrix}
+\mu_t \\
+\nu_t
+\end{pmatrix} + 
+
+\begin{pmatrix}
+\xi_t \\
+\zeta_t
+\end{pmatrix}
+
+\end{equation}
+
+Cabe destacar que as matrizes $H_t$ e $Q_t$, neste caso, são dadas por:
+
+\begin{equation}
+\tag{8}
+
+H_t =  \epsilon_t, \qquad Q_t = \begin{bmatrix}
+{\sigma_\xi}^2 & 0 \\
+0 & {\sigma_\zeta}^2
+\end{bmatrix} 
+
+\end{equation}
+
+# Algoritmos para filtragem e suavização
+
+Dado um conjunto de observações $Y_t = y_1, ..., y_t$, o filtro de Kalman é uma recursão para calcular $a_{t|t} = \mathbb{E}(\alpha_t|Y_t)$, $a_{t+1} = \mathbb{E}(\alpha_{t+1}|Y_t)$, $P_{t|t} = Var(\alpha_t|Y_t)$ e $P_{t+1} = Var(\alpha_{t+1}|Y_t)$ dadas as condições de inicialização $a_1$ e $P_1$. A derivação das equações da recursão estão bem detalhadas no capítulo 4 de [Durbin e Koopman (2001)](http://www.ssfpack.com/DKbook.html), e basicamente dependem apenas de propriedades elementares da teoria de regressão multivariada.
+
+A partir das estimativas obtidas pelo filtro de Kalman, também é possível obter os valores da média e variância de $\alpha_t$ condicional a todas as observações realizadas ($y_1, ..., y_t$). Isto é feito por meio de uma recursão reversa, chamada de suavização, que também será demonstrada a seguir.
+
+## O conjunto de dados
+
+Para o presente exercício, serão utilizados dados obtidos do [Yahoo Finance](https://finance.yahoo.com/quote/GOOG/), através do pacote **quantmod** do R. O conjunto de dados será composto pela série de preços de fechamento das ações da [Alphabet](https://abc.xyz/), negociadas na [Nasdaq Stock Market](https://www.nasdaq.com/).
+
+```{r message=FALSE, warning=FALSE}
+
+# Pacote quantmod, para pegar os dados dos precos das acoes do Yahoo Finance
+    
+    require("quantmod")
+
+# Dados - Alphabet
+        
+    # Declara as datas
+    
+        d.ini = as.Date("2015-01-01")
+        d.fim = as.Date("2020-09-17")
+    
+    # Pega dados
+        
+        getSymbols("GOOG", from=d.ini, to=d.fim)
+    
+    # Monta a serie de precos de fechamento - ultimos 100 dias
+        
+        final = length(GOOG[,1])
+        y = GOOG[(final-100):final,4]
+
+# Grafico do processo (y)
+        
+    t = length(y)
+    
+    plot.ts(y, col = "darkgrey", xlab="",ylab = "GOOG",pch=3,cex=0.5,
+                    cex.lab=0.8,cex.axis=0.7)
+        
+```
+
+
+## O filtro de Kalman
+
+Antes da apresentação da recursão, é necessário definir quais são os valores iniciais $a_1$ e $P_1$. Esta definição é tratada como o problema da inicialização do filtro, que por sua vez está bem descrito no capítulo 5 de [Durbin e Koopman (2001)](http://www.ssfpack.com/DKbook.html). 
+
+### Inicialização difusa
+
+Em geral, define-se que $\alpha_1 \sim N(a_1, P_1)$. Caso os valores iniciais $a_1$ e $P_1$ sejam conhecidos, é possível iniciar a recursão do filtro de Kalman com estes valores $a_1$ e $P_1$.
+
+Na maioria das aplicações, entretanto, pelo menos alguns dos elementos que compõem $a_1$ e $P_1$ são desconhecidos, o que demanda a criação de um método para estabelecer os valores iniciais da recursão. Um modelo geral para o vetor de estados inicial é dado por:
+
+\begin{equation}
+\tag{9}
+\alpha_1 = a + A\delta + R_0\eta_0, \qquad \eta_0 \sim N(0,Q_0)
+\end{equation}
+
+Em que $a$ constitui um vetor com o conhecimento existente a respeito do vetor de estados inicial (geralmente é apenas um vetor de zeros), $\delta$ é um vetor com as quantidades desconhecidas, $A$ e $R_0$ são matrizes que selecionam quais variáveis serão tratadas como conhecidas e quais variáveis serão tratadas como desconhecidas (no caso de $A$) e quais elementos do vetor de espaço serão impactados por um componente estocástico pertencente ao vetor $\eta_0$ (no caso de $R_0$).
+
+Para refletir o desconhecimento a respeito dos parâmetros iniciais, define-se que $\delta \sim N(0,\kappa I_q)$ com $\kappa \to \infty$. Desta forma, temos que $\mathbb{E}(\alpha_1) = a$ e $Var(\alpha_1) = P_1 = \kappa AA' + R_0Q_0R_0'$.
+
+Definindo $P_\infty = AA'$ e $P_\star = R_0 Q_0 R_0'$, temos a seguinte equação para $P_1$:
+
+\begin{equation}
+\tag{10}
+P_1 = \kappa P_\infty + P_\star, \qquad \kappa \to \infty
+\end{equation}
+
+Para o caso tratado aqui, temos $R_t$ e $Q_t$ conhecidos e constantes. Portanto, com a equação $(10)$ podemos iniciar o filtro de Kalman simplesmente definindo um $\kappa$ grande o suficiente, para aproximar os valores de $a_1$ e $P_1$.
+
+### Estimação dos hiperparâmetros
+
+Conforme citado anteriormente, para a estimação mais precisa do filtro é necessário definir os hiperparâmetros do modelo (${\sigma_\epsilon}^2$, ${\sigma_\xi}^2$ e ${\sigma_\zeta}^2$, que definem as matrizes $H_t$ e $Q_t$). Para isso, [Harvey e Phillips (1979)](https://academic.oup.com/biomet/article-abstract/66/1/49/224232) constroem uma função de log verossimilhança que pode ser maximizada para estimar os hiperparâmetros:
+
+\begin{equation}
+\tag{11}
+log L(Y_T) = - \frac{T}{2} log(2\pi) - \frac{1}{2} \sum_{t=1}^{T} {log|F_t|} - \frac{1}{2} \sum_{t=1}^{T} {v_t F_t^{-1} v_t'}
+\end{equation}
+
+Em que $v_t$ é a diferença da estimativa de $y_t$ e o valor realizado, também chamado de erro de previsão um passo a frente; e $F_t$ é a variância de $v_t$. Ambos $v_t$ e $F_t$ serão definidos com a recursão do filtro de Kalman.
+
+Na prática, a estimação de $log L(Y_T)$ acontece da seguinte forma: Estima-se o filtro de Kalman para encontrar os valores de $v_t$ e $F_t$ até que o valor de $log L(Y_T)$ seja maximizado. Uma dificuldade que surge é a necessidade de definir uma inicialização difusa que seja exata, diferente da simples aproximação com um $\kappa$ grande o suficiente, como demonstrado no parágrafo anterior.
+
+A derivação da função de log verossimilhança difusa exata para a estimação dos hiperparâmetros está disposta nos capítulos 5 e 7 de [Durbin e Koopman (2001)](http://www.ssfpack.com/DKbook.html) e foge do escopo do presente trabalho, sendo inclusive a única parte do código implementado em R que não será construído a partir do pacote base, sendo utilizado o pacote **dlm**.
+
+```{r message=FALSE, warning=FALSE}
+
+# Matrizes que determinam o modelo de nivel local com tendencia estocastica
+        
+    Z. = matrix(c(1, 0), nrow = 1, ncol = 2)
+    T. = matrix(c(1,0,1,1), nrow = 2, ncol = 2)
+    R. = diag(2)
+    
+# Hiperparametros do modelo (sigma-epsilon, sigma-csi e sigma-zeta)
+    
+    # Estima por maxima verossimilhanca, conforme definido na secao 7.2 do livro, utilizando  o pacote dlm
+    
+        require("dlm")
+    
+        # Modelo
+    
+            ordem = 2 # Representa um modelo de nivel com tendencia estocastica
+            fn <- function(p){
+              dlmModPoly(order = ordem, dV = exp(p[1]), dW = exp(p[2:3]),
+                         m0 = c(0, 0), C0 = 1e7*diag(2)) # a1 como vetor de zeros e P1 com kappa muito grande
+            }
+            
+        # Encontra os hiperparametros que maximizam a funcao de log verossimilhanca para o modelo
+            
+            fit = dlmMLE(y, rep(1,3), fn)
+            mod = fn(fit$par)
+            
+        # Hiperparametros do modelo
+            
+            s.epsilon = V(mod)
+            s.csi = W(mod)[1]
+            s.zeta = W(mod)[2]
+    
+# Matrizes de covariancia
+
+    H. = s.epsilon
+    Q. = matrix(c(s.csi,0,0,s.zeta), nrow = 2, ncol = 2)
+    
+    
+# Declara os arrays para salvar as matrizes a e P, indexadas por t
+        
+    a = array(dim = c(2,1,t+1))
+    P = array(dim = c(2,2,t+1))
+
+# Inicializacao difusa aproximada, conforme equacao (5.4) do livro
+    
+    a[,,1] = matrix(c(0, 0), nrow = 2, ncol = 1)
+    P[,,1] = diag(2)*1e7 + R. %*% Q. %*% t(R.) 
+
+```
+
+As estimativas para os hiperparâmetros do modelo foram as seguintes: ${\sigma_\epsilon}^2 = 104$, ${\sigma_\xi}^2 = 585.5985$ e ${\sigma_\zeta}^2 = 0$
+
+### Recursão para o filtro
+
+A derivação das equações utilizadas no filtro de Kalman estão detalhadas na seção 4.3 de [Durbin e Koopman (2001)](http://www.ssfpack.com/DKbook.html), sendo baseada nos lemas demonstrados na seção 4.2. Estas demonstrações fogem do escopo do presente trabalho, sendo que serão apresentados aqui apenas a aplicação da recursão, conforme equações abaixo:
+
+\begin{equation}
+\tag{12}
+v_t = y_t - Z_t a_t, \qquad F_t = Z_t P_t Z_t' + H_t
+\end{equation}
+
+\begin{equation}
+\tag{13}
+a_{t+1} = T_t a_t + K_t v_t, \qquad P_{t+1} = T_t P_t (T_t - K_t Z_t)' + R_t Q_t R_t'
+\end{equation}
+
+Em que $K_t = T_t P_t Z_t' F_t^{-1}$ é denominado o ganho de Kalman. 
+
+Uma notação adicional, que será utilizada posteriormente, para a recursão reversa da suavização é dada por $L_t = T_t - K_t Z_t$.
+
+```{r message=FALSE, warning=FALSE}
+
+# Declara o vetor y.hat, com a estimativa de y_t+1, dadas as informacoes de t e o vetor v, dos erros de previsao um passo a frente
+            
+    y.hat = rep(0,t+1)
+    v = rep(0,t)
+    
+# Declara os arrays para salvar as demais matrizes que dependem de t
+    
+    F. = rep(0,t)
+    K. = array(dim = c(2,1,t))
+    L. = array(dim = c(2,2,t))
+    
+# Recursao para estimar y para i = 1, ..., t por meio do filtro, conforme equacoes apresentadas no texto acima
+            
+    y.hat[1] = Z. %*% matrix(a[,,1])
+    
+    for (i in 1:t){
+      
+      # Erro de previsao um passo a frente
+      
+          v[i] = y[i] - Z. %*% matrix(a[,,i])
+      
+      # Notacao adicional: F, K e L
+      
+          F.[i] = Z. %*% P[,,i] %*% t(Z.) + H.
+          K.[,,i] = T. %*% P[,,i] %*% t(Z.) %*% solve(F.[i])
+          L.[,,i] = T. - matrix(K.[,,i]) %*% Z.
+          
+      # Equacoes de atualizacao
+          
+          P[,,i+1] = T. %*% P[,,i] %*% t( T. - ( matrix(K.[,,i]) %*% Z. ) ) + R. %*% Q. %*% t(R.) 
+          a[,,i+1] = T. %*% matrix(a[,,i]) + matrix(K.[,,i]) %*% v[i]
+          
+      # Estimador de y_t+1
+          
+          y.hat[i+1] = Z. %*% matrix(a[,,i+1])
+      
+    }
+
+
+# Coloca a serie do modelo estimado no grafico
+    
+        # Plot da serie original
+    
+            plot.ts(y, col = "darkgrey", xlab="",ylab = "GOOG",pch=3,cex=0.5,
+                    cex.lab=0.8,cex.axis=0.7)
+        
+        # Adiciona o modelo estimado
+            
+            lines(dropFirst(y.hat) , col = "red", lwd = 2, lty=2)
+        
+        # Legenda
+            
+            legend("topleft",leg = c("Preço de fechamento","Modelo estimado"),
+                   cex = 0.6,lty = c(1, 2), col = c("darkgrey","red"), pch=c(3,NA), bty = "y", horiz = T)
+
+```
+
+## Suavização do modelo
+
+Conforme citado anteriormente, a suavização consiste em uma recursão reversa ($t = T, ..., 1$), para estimar $\mathbb{E}(\alpha_t|y_1, ..., y_t)$ e $Var(\alpha_t|y_1, ..., y_t)$. Novamente a derivação das equações da recursão fogem do escopo deste texto, sendo que as demonstrações necessárias estão feitas na seção 4.4 de [Durbin e Koopman (2001)](http://www.ssfpack.com/DKbook.html).
+
+Para apresentar as equações da recursão reversa, $\mathbb{E}(\alpha_t|y_1, ..., y_t)$ será denotado por $\widehat{\alpha_t}$ e $Var(\alpha_t|y_1, ..., y_t)$ definida como $V_t$. Além disso, é necessário definir $r_t = 0_{2 \times 1}$ e $N_t = 0_{2 \times 2}$.
+
+Segue a definição da recursão reversa:
+
+\begin{equation}
+\tag{14}
+r_{t-1} = Z_t' F_t^{-1} v_t + L_t' r_t, \qquad N_{t-1} = Z_t' F_t^{-1} Z_t + L_t' N_t L_t
+\end{equation}
+
+\begin{equation}
+\tag{15}
+\widehat{\alpha_t} = a_t + P_t r_{t-1}, \qquad V_t = P_t - P_t N_{t-1} P_t'
+\end{equation}
+
+```{r message=FALSE, warning=FALSE}
+
+# Suavizacao, recursao reversa, para estimar a variavel de estado com base em toda a informacao realizada
+    
+    # Notacoes auxiliares: alfa.hat, V, N, r
+        
+        alfa.hat = array(dim = c(2,1,t))
+        V. = array(dim = c(2,2,t))
+        
+        r. = array(dim = c(2,1,t))
+        N. = array(dim = c(2,2,t))
+        
+        r.[,,t] = matrix(c(0,0), nrow = 2, ncol = 1)
+        N.[,,t] = matrix(rep(0,4), nrow = 2, ncol = 2)
+        
+    # Recursao para estimar y para i = t, ..., 1 por meio da suavizacao, conforme equacoes (4.44)
+        
+        # Declara o vetor y.hat.s
+        
+            y.hat.s = rep(0,t)
+            
+        for (i in t:1){
+          
+          if (i==1){ # Primeira observacao: Pela construcao da recursao reversa, fica fora do vetor
+            
+            # Auxiliares
+            
+                r_0 = t(Z.) %*% solve(F.[i]) %*% v[i] + t(L.[,,i]) %*% matrix(r.[,,i])
+                N_0 = t(Z.) %*% solve(F.[i]) %*% Z. + t(L.[,,i]) %*% N.[,,i] %*% L.[,,i]
+            
+            # Estima o vetor de estado e sua variancia
+            
+                alfa.hat[,,i] = a[,,i] + P[,,i] %*% matrix(r_0)
+                V.[,,i] = P[,,i] - P[,,i] %*% N_0 %*% P[,,i]
+            
+            # Estimador de y via suavizacao
+            
+                y.hat.s[i] = Z. %*% matrix(alfa.hat[,,i])
+            
+          }
+          else {
+            
+            # Auxiliares
+            
+                r.[,,i-1] = t(Z.) %*% solve(F.[i]) %*% v[i] + t(L.[,,i]) %*% matrix(r.[,,i])
+                N.[,,i-1] = t(Z.) %*% solve(F.[i]) %*% Z. + t(L.[,,i]) %*% N.[,,i] %*% L.[,,i]
+                
+            # Estima o vetor de estado e sua variancia
+            
+                alfa.hat[,,i] = a[,,i] + P[,,i] %*% matrix(r.[,,i-1])
+                V.[,,i] = P[,,i] - P[,,i] %*% N.[,,i-1] %*% P[,,i]
+                
+            # Estimador de y via suavizacao
+            
+                y.hat.s[i] = Z. %*% matrix(alfa.hat[,,i])
+            
+          }
+          
+        }
+            
+# Coloca a serie do modelo estimado (suavizado) no grafico
+            
+    # Plot da serie original
+
+        plot.ts(y, col = "darkgrey", xlab="",ylab = "GOOG",pch=3,cex=0.5,
+                cex.lab=0.8,cex.axis=0.7)
+    
+    # Adiciona o modelo estimado
+        
+        lines(y.hat.s , col = "blue", lwd = 2, lty=2)
+    
+    # Legenda
+        
+        legend("topleft",leg = c("Preço de fechamento","Modelo estimado"),
+               cex = 0.6,lty = c(1, 2), col = c("darkgrey","blue"), pch=c(3,NA), bty = "y", horiz = T)
+
+
+```
+
+### Avaliação dos componentes não observáveis
+
+Abaixo seguem os gráficos com as séries dos componentes não observáveis: nível ($\mu_t$), tendência ($\nu_t$) e irregular ($\epsilon_t$). Tanto para a estimação com o filtro de Kalman, quanto para a estimação dada pela suavização.
+
+```{r message=FALSE, warning=FALSE}
+
+# Plot do componente de nível - filtro de Kalman
+
+    plot.ts(dropFirst(a[1,,]), col = "darkgrey", xlab="",ylab = "")
+
+# Plot do componente de tendencia - filtro de Kalman
+
+    plot.ts(dropFirst(a[2,,]), col = "darkgrey", xlab="",ylab = "")
+
+# Plot do componente irregular (epsilon) - filtro de Kalman
+        
+    plot.ts((y-dropFirst(y.hat)), col = "darkgrey", xlab="",ylab = "")
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+# Plot do componente de nível para o modelo suavizado
+
+    plot.ts(alfa.hat[1,,], col = "darkgrey", xlab="",ylab = "")
+
+# Plot do componente de tendencia para o modelo suavizado
+
+    plot.ts(alfa.hat[2,,], col = "darkgrey", xlab="",ylab = "")
+
+# Plot do componente irregular (epsilon) para o modelo suavizado
+        
+    plot.ts((y-y.hat.s), col = "darkgrey", xlab="",ylab = "")
+
+```
+
+# Considerações Finais
+
+O objetivo do presente trabalho era o de apresentar didaticamente a implementação em R dos algoritmos de filtragem e suavização, conforme propostos por [Durbin e Koopman (2001)](http://www.ssfpack.com/DKbook.html), tendo em vista que a construção dos algoritmos utilizando apenas o pacote base do R é bastante útil para fins de visualização e aprendizado da teoria exposta no livro.
+
+A avaliação mais detalhada da aplicação do modelo de nível estocástico com tendência estocástica para as ações da [Alphabet](https://abc.xyz/) não foi exatamente o foco do trabalho, sendo possível estender esta abordagem em exposições futuras, buscando interpretar os componentes e os resultados do modelo, bem como avaliando o ajuste e a robustez da estimação realizada e suas possíveis aplicações práticas.
