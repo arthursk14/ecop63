@@ -1,0 +1,230 @@
+---
+title: "The Local Linear Trend Model"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+The local linear trend model is obtained by adding a slope component $\nu_t$ to the local level model, as follows:
+
+$$ y_t = \mu_t + \epsilon_t, \qquad \epsilon_t \sim NID(0,{\sigma_\epsilon}^2) $$
+
+$$ \mu_{t+1} = \mu_t + \nu_t + \xi_t, \qquad \xi_t \sim NID(0,{\sigma_\xi}^2) $$
+$$ \nu_{t+1} = \nu_t + \zeta_t, \qquad \zeta_t \sim NID(0,{\sigma_\zeta}^2)$$
+
+# Deterministic Level and Slope
+
+Fixing all state disturbances $\xi_t$ and $\zeta_t$ in (3.1) on zero, it is easily verified that the linear trend model simplifies to:
+
+$$ y_t = \mu_1 + \nu_1 g_t + \epsilon_t, \qquad \epsilon_t \sim NID(0,{\sigma_\epsilon}^2) $$
+for $t = 1,...,n$, where the predictor variable $g_t = t − 1$ for $t = 1,...,n$ is effectively time, and $\mu_1$ and $\nu_1$ are the initial values of the level and the slope. The latter equation can also be written as
+
+$$ y_t = (\mu_1 - \nu_1) + \nu_1(g_t +1) + \epsilon_t \\
+\quad = (\mu_1 - \nu_1) + \nu_1 x_t + \epsilon_t $$
+
+with $x_t = g_t + 1 = t = 1,2,...,n$.
+
+## Using Ordinary Least Squares
+
+$$ y_t = (\mu_1 - \nu_1) + \nu_1(g_t +1) + \epsilon_t \\
+\quad = (\mu_1 - \nu_1) + \nu_1 x_t + \epsilon_t \\
+\quad = \alpha + \beta x_t + \epsilon_t $$
+
+with $\alpha =  (\mu_1 - \nu_1)$ and $\beta = \nu_1$
+
+The analysis of the log of the number of UK drivers KSI series using a simple linear regression yields the following results:
+
+```{r}
+
+options(tinytex.verbose = TRUE)
+
+# Pacotes
+require("xts")
+
+# Declara o conjunto de dados
+y = datasets::UKDriverDeaths
+ly = log(y)
+
+# Plot da serie
+ts.plot(ly)
+
+# OLS
+t = index(index(ly))
+OLS = lm(ly~t)
+
+# Resultados
+summary(OLS)
+```
+The resulting model is:
+
+$$ \hat{y_t} = 7.5458 - 0.00145 x_t $$
+
+## Using Proposed Algorithm
+
+The analysis of the log of the number of UK drivers KSI series using
+R implementation of the proposed algorithm, with package "dlm" yields the following results:
+
+```{r}
+# Pacote
+require("dlm")
+
+# Modelo - Variancias das equacoes de estado fixas em 0
+fn <- function(params){
+        dlmModPoly(order = 2, dV = exp(params[1]), dW = c(0,0))
+}
+  
+# MLE
+fit = dlmMLE(ly, rep(0,1), fn)
+  
+# Aplicando os parametros MLE no modelo
+mod = fn(fit$par)
+  
+# Parametros - Variancias - Observacao (Componente Irregular) e Estado
+obs.err = V(mod)
+sta.err = W(mod)
+  
+print(obs.err[1,1])
+print(sta.err[1,1])
+print(sta.err[2,2])
+
+# Aplica o filtro de Kalman
+km = dlmFilter(ly,mod)
+
+# Suavizacao
+kms = dlmSmooth(km)
+sm = dropFirst(kms$s)
+
+# Parametros - Valores iniciais
+val0 = sm[1,]
+
+print(val0)
+
+```
+
+As expected, the result is the same:
+
+$$\hat{y_t} = (7.5444 - (-0.00145)) - 0.00145 x_t \\
+\quad = 7.5458 - 0.00145 x_t$$
+
+# Stochastic Level and Slope
+
+Allowing both the level and the slope to vary over time in model, the following results are obtained:
+
+```{r}
+# Modelo
+level0 = ly[1]
+slope0 = mean(diff(ly))
+  
+fn <- function(params){
+    dlmModPoly(dV = exp(params[1]), dW = exp(params[2:3]),
+               m0 = c(level0, slope0), C0 = 2*diag(2))
+  }
+  
+# MLE
+fit = dlmMLE(ly, rep(0,3), fn)
+  
+# Aplicando os parametros MLE no modelo
+mod = fn(fit$par)
+  
+# Parametros - Variancias - Observacao (Componente Irregular) e Estado
+obs.err = V(mod)
+sta.err = W(mod)
+  
+print(obs.err[1,1])
+print(sta.err[1,1])
+print(sta.err[2,2])
+
+# Aplica o filtro de Kalman
+km = dlmFilter(ly,mod)
+
+# Suavizacao
+kms = dlmSmooth(km)
+sm = dropFirst(kms$s)
+
+# Parametros - Valores iniciais
+val0 = sm[1,]
+
+print(val0)
+```
+
+The maximum likelihood estimate of the variance of the irregular is ${\sigma_\epsilon}^2 = 0.0021181$, and the maximum likelihood estimates of the state disturbance variances are ${\sigma_\xi}^2 = 0.012128$ and ${\sigma_\zeta}^2 = 1.5E−11$, respectively. The maximum likelihood estimates of the initial values of the level and the slope are $\mu_1 = 7.4157$ and $\nu_1 = 0.00028896$, respectively. The state variance for the slope component is almost equal to zero, meaning that the value of the slope hardly changes over time.
+
+```{r}
+# Plot da serie original
+plot.ts(ly, col = "darkgrey", xlab="",ylab = "log KSI",pch=3,cex=0.5,
+            cex.lab=0.8,cex.axis=0.7)
+
+# Adiciona o modelo estimado
+lines(dropFirst(kms$s[,1]) , col = "blue", lwd = 2, lty=2)
+
+# Legenda
+legend("topright",leg = c("log UK drivers KSI"," stochastic level and trend"),
+      cex = 0.6,lty = c(1, 2), col = c("darkgrey","blue"), pch=c(3,NA), bty = "y", horiz = T)
+
+# Plot do componente de tendencia (slope)
+plot.ts(dropFirst(kms$s[,2]), col = "darkgrey", xlab="",ylab = "")
+
+# Plot do componente irregular (epsilon)
+plot.ts((ly-dropFirst(kms$s[,1])), col = "darkgrey", xlab="",ylab = "")
+  
+```
+
+# Stochastic Level and Deterministic Slope
+
+Another possibility is to consider a model where only the level is allowed to vary over time whereas the slope is treated deterministically. In this case it is not very difficult to verify that model can be written as
+
+$$ y_t = \mu_t + \epsilon_t, \qquad \epsilon_t \sim NID(0,{\sigma_\epsilon}^2) $$
+
+$$ \mu_{t+1} = \mu_t + \nu_1 + \xi_t, \qquad \xi_t \sim NID(0,{\sigma_\xi}^2) $$
+The analysis of the log of the UK drivers KSI with this model yields the following results:
+
+```{r}
+# Modelo
+fn <- function(params){
+    dlmModPoly(dV = exp(params[1]), dW = c(exp(params[2]),0))
+  }
+  
+# MLE
+fit = dlmMLE(ly, rep(0,2), fn)
+  
+# Aplicando os parametros MLE no modelo
+mod = fn(fit$par)
+  
+# Parametros - Variancias - Observacao (Componente Irregular) e Estado
+obs.err = V(mod)
+sta.err = W(mod)
+  
+print(obs.err[1,1])
+print(sta.err[1,1])
+print(sta.err[2,2])
+
+# Aplica o filtro de Kalman
+km = dlmFilter(ly,mod)
+
+# Suavizacao
+kms = dlmSmooth(km)
+sm = dropFirst(kms$s)
+
+# Parametros - Valores iniciais
+print(sm[1,1])
+print(sm[2,2])
+```
+
+At convergence, the maximum likelihood estimate of the variance of the observation disturbances is ${\sigma_\epsilon}^2 = 0.00211869$, and the maximum likelihood estimate of the variance of the level disturbances is ${\sigma_\xi}^2 = 0.0121271$. The maximum likelihood estimates of the values of the level and the slope right at the start of the series are $\mu_1 = 7.4157$ and $\nu_1 = 0.00028897$, respectively.
+
+```{r}
+# Plot da serie original
+plot.ts(ly, col = "darkgrey", xlab="",ylab = "log KSI",pch=3,cex=0.5,
+            cex.lab=0.8,cex.axis=0.7)
+
+# Adiciona o modelo estimado
+lines(dropFirst(kms$s[,1]) , col = "blue", lwd = 2, lty=2)
+
+# Legenda
+legend("topright",leg = c("log UK drivers KSI"," stochastic level, deterministic slope"),
+      cex = 0.6,lty = c(1, 2), col = c("darkgrey","blue"), pch=c(3,NA), bty = "y", horiz = T)
+
+```
+
+The state space models discussed in the present book are regression models in which the parameters (intercept and regression coefficient(s)) are allowed to vary over time. State space models are therefore also sometimes referred to as *dynamic linear models*.
